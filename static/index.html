@@ -62,7 +62,11 @@
   th { color: var(--muted); font-weight: 500; font-size: 12px; text-transform: uppercase; letter-spacing: 0.4px; }
   tbody tr:hover { background: var(--panel-2); }
   td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
-  .addr { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; color: var(--accent-2); }
+  .addr {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px;
+    color: var(--accent-2); cursor: pointer; border-bottom: 1px dotted transparent;
+  }
+  .addr:hover { border-bottom-color: var(--accent-2); }
   .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 12px 16px; }
 
   .filter { display: flex; flex-wrap: wrap; gap: 10px; align-items: end; margin-bottom: 12px; }
@@ -273,7 +277,7 @@ async function loadStakers() {
   document.getElementById("stakerBody").innerHTML = j.results.map((s, i) => `
     <tr>
       <td class="muted">${page.offset + i + 1}</td>
-      <td><span class="addr">${s.user}</span></td>
+      <td><span class="addr" data-addr="${s.user}" title="Click to copy">${s.user}</span></td>
       <td class="num">${fmt(s.staked_hype, 4)}</td>
       <td class="num">${s.n_validators}</td>
       <td class="num muted">${ago(s.last_action_ms)}</td>
@@ -291,7 +295,7 @@ async function loadValidators() {
     <tr>
       <td class="muted">${i + 1}</td>
       <td>${v.name || "—"}</td>
-      <td><span class="addr">${short(v.validator)}</span></td>
+      <td><span class="addr" data-addr="${v.validator}" title="${v.validator} — click to copy">${short(v.validator)}</span></td>
       <td class="num">${fmt(v.stake_hype, 0)}</td>
       <td class="num">${v.commission ? (parseFloat(v.commission) * 100).toFixed(2) + "%" : "—"}</td>
       <td class="num">${v.apr ? (parseFloat(v.apr) * 100).toFixed(2) + "%" : "—"}</td>
@@ -307,6 +311,18 @@ async function loadAll() {
     await Promise.all([loadStakers(), loadValidators()]);
   }
 }
+
+document.addEventListener("click", async (e) => {
+  const el = e.target.closest(".addr");
+  if (!el) return;
+  const addr = el.dataset.addr || el.textContent.trim();
+  try {
+    await navigator.clipboard.writeText(addr);
+    toast("Copied " + short(addr));
+  } catch {
+    toast("Copy failed — your browser blocked it");
+  }
+});
 
 document.getElementById("applyFilter").addEventListener("click", () => { page.offset = 0; loadStakers(); });
 document.getElementById("resetFilter").addEventListener("click", () => {

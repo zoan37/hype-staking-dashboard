@@ -34,6 +34,8 @@
   }
   button:disabled { opacity: 0.6; cursor: progress; }
   button.secondary { background: var(--panel-2); color: var(--text); border: 1px solid var(--border); }
+  .ghlink { color: var(--muted); display: inline-flex; align-items: center; padding: 4px; border-radius: 6px; transition: color 0.15s; }
+  .ghlink:hover { color: var(--text); background: var(--panel-2); }
   main { padding: 24px 28px; max-width: 1280px; margin: 0 auto; }
 
   .grid { display: grid; gap: 14px; }
@@ -47,7 +49,13 @@
   .card .sub { color: var(--muted); font-size: 12px; margin-top: 2px; }
 
   section { margin-top: 26px; }
-  section h2 { font-size: 14px; text-transform: uppercase; letter-spacing: 0.8px; color: var(--muted); margin: 0 0 10px; }
+  section h2 { font-size: 14px; text-transform: uppercase; letter-spacing: 0.8px; color: var(--muted); margin: 0 0 10px; display:flex; align-items:center; gap:12px; }
+  .download {
+    font-size: 11px; text-transform: none; letter-spacing: 0; font-weight: 500;
+    color: var(--accent-2); text-decoration: none; padding: 2px 8px;
+    border: 1px solid var(--border); border-radius: 4px;
+  }
+  .download:hover { background: var(--panel-2); }
 
   table { width: 100%; border-collapse: collapse; font-size: 13px; }
   th, td { padding: 8px 10px; text-align: left; border-bottom: 1px solid var(--border); }
@@ -85,13 +93,18 @@
   <h1>HYPE <span>Staking</span> Dashboard</h1>
   <div style="display:flex; gap:14px; align-items:center;">
     <div class="meta" id="lastRefresh">—</div>
-    <button id="refreshBtn">Refresh data</button>
+    <a class="ghlink" href="https://github.com/zoan37/hype-staking-dashboard" target="_blank" rel="noopener" title="View source on GitHub">
+      <svg width="18" height="18" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+        <path d="M8 0C3.58 0 0 3.58 0 8a8 8 0 005.47 7.59c.4.07.55-.17.55-.38v-1.33c-2.23.48-2.7-1.07-2.7-1.07-.36-.93-.89-1.18-.89-1.18-.73-.5.06-.49.06-.49.81.06 1.23.83 1.23.83.72 1.23 1.88.88 2.34.67.07-.52.28-.88.51-1.08-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.13 0 0 .67-.21 2.2.82a7.65 7.65 0 014 0c1.53-1.04 2.2-.82 2.2-.82.44 1.11.16 1.93.08 2.13.51.56.82 1.27.82 2.15 0 3.07-1.87 3.74-3.65 3.94.29.25.54.73.54 1.48v2.19c0 .21.15.46.55.38A8 8 0 0016 8c0-4.42-3.58-8-8-8z"/>
+      </svg>
+    </a>
   </div>
 </header>
 
 <main>
   <div id="emptyState" class="empty" style="display:none;">
-    No data yet. Click <strong>Refresh data</strong> to pull the latest from HypurrScan + Hyperliquid (~10–30s).
+    Loading the latest staking data from HypurrScan + Hyperliquid… this takes about 30–60 seconds on a fresh boot.<br>
+    <span class="muted" style="font-size:12px;">After the first load, the backend refreshes hourly on its own.</span>
   </div>
 
   <section id="cardsSection">
@@ -104,7 +117,7 @@
   </section>
 
   <section>
-    <h2>Stakers</h2>
+    <h2>Stakers <a class="download" href="/api/export/stakers.csv" title="Download all stakers as CSV">Download CSV</a></h2>
     <div class="panel">
       <div class="filter">
         <label>Min HYPE
@@ -151,7 +164,7 @@
   </section>
 
   <section>
-    <h2>Validators</h2>
+    <h2>Validators <a class="download" href="/api/export/validators.csv" title="Download validators as CSV">Download CSV</a></h2>
     <div class="panel">
       <table>
         <thead>
@@ -195,21 +208,7 @@ function toast(msg) {
 
 let page = { offset: 0, limit: 50, total: 0 };
 
-async function refresh() {
-  const btn = document.getElementById("refreshBtn");
-  btn.disabled = true; btn.textContent = "Refreshing…";
-  try {
-    const r = await fetch("/api/refresh", { method: "POST" });
-    if (!r.ok) throw new Error(await r.text());
-    const j = await r.json();
-    toast(`Refreshed: ${fmtInt(j.events)} events in ${j.seconds.toFixed(1)}s`);
-    await loadAll();
-  } catch (e) {
-    toast("Refresh failed: " + e.message);
-  } finally {
-    btn.disabled = false; btn.textContent = "Refresh data";
-  }
-}
+let emptyPollT = null;
 
 async function loadStats() {
   const r = await fetch("/api/stats");
@@ -218,9 +217,11 @@ async function loadStats() {
   if (s.empty) {
     empty.style.display = "block";
     document.getElementById("cardsSection").style.display = "none";
-    document.getElementById("lastRefresh").textContent = "no data";
+    document.getElementById("lastRefresh").textContent = "loading…";
+    if (!emptyPollT) emptyPollT = setInterval(loadAll, 5000);
     return null;
   }
+  if (emptyPollT) { clearInterval(emptyPollT); emptyPollT = null; }
   empty.style.display = "none";
   document.getElementById("cardsSection").style.display = "";
   document.getElementById("lastRefresh").textContent = "Updated " + ago(s.last_refresh_ms);
@@ -307,7 +308,6 @@ async function loadAll() {
   }
 }
 
-document.getElementById("refreshBtn").addEventListener("click", refresh);
 document.getElementById("applyFilter").addEventListener("click", () => { page.offset = 0; loadStakers(); });
 document.getElementById("resetFilter").addEventListener("click", () => {
   document.getElementById("minHype").value = 0;

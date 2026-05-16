@@ -1,10 +1,17 @@
 """FastAPI backend for the HYPE staking dashboard."""
 from __future__ import annotations
 
+import asyncio
+import csv
+import io
+import os
+import time
+from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi import FastAPI, Header, HTTPException, Query
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 import db
@@ -22,7 +29,64 @@ BUCKETS = [
     (1_000_000, None, "≥1M"),
 ]
 
-app = FastAPI(title="HYPE Staking Dashboard")
+REFRESH_TOKEN = os.environ.get("REFRESH_TOKEN")
+AUTO_REFRESH = os.environ.get("AUTO_REFRESH", "0") == "1"
+REFRESH_INTERVAL_S = int(os.environ.get("REFRESH_INTERVAL_S", "3600"))
+
+_ingest_lock = asyncio.Lock()
+
+
+async def _run_ingest(label: str):
+    async with _ingest_lock:
+        print(f"[{label}] ingest starting")
+        result = await asyncio.to_thread(ingest.run)
+        print(f"[{label}] ingest done: {result}")
+        return result
+
+
+async def _periodic_refresh():
+    while True:
+        conn = db.connect()
+        last = db.get_meta(conn, "last_refresh_ms")
+        conn.close()
+        if last:
+            elapsed = (time.time() * 1000 - int(last)) / 1000
+            wait = max(60.0, REFRESH_INTERVAL_S - elapsed)
+        else:
+            wait = float(REFRESH_INTERVAL_S)
+        await asyncio.sleep(wait)
+        try:
+            await _run_ingest("scheduled")
+        except Exception as e:
+            print(f"[scheduled] ingest failed: {e}")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    db.init()
+    conn = db.connect()
+    has_data = db.get_meta(conn, "last_refresh_ms") is not None
+    conn.close()
+
+    bg_tasks: list[asyncio.Task] = []
+    if not has_data:
+        print("Empty DB at startup — running initial ingest in background")
+        async def initial():
+            try:
+                await _run_ingest("initial")
+            except Exception as e:
+                print(f"[initial] ingest failed: {e}")
+        bg_tasks.append(asyncio.create_task(initial()))
+    if AUTO_REFRESH:
+        bg_tasks.append(asyncio.create_task(_periodic_refresh()))
+    try:
+        yield
+    finally:
+        for t in bg_tasks:
+            t.cancel()
+
+
+app = FastAPI(title="HYPE Staking Dashboard", lifespan=lifespan)
 STATIC_DIR = Path(__file__).parent / "static"
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
@@ -32,13 +96,35 @@ def index():
     return FileResponse(STATIC_DIR / "index.html")
 
 
+@app.get("/api/health")
+def health():
+    conn = db.connect()
+    last = db.get_meta(conn, "last_refresh_ms")
+    conn.close()
+    body = {
+        "ok": last is not None,
+        "data_ready": last is not None,
+        "last_refresh_ms": int(last) if last else None,
+        "auto_refresh": AUTO_REFRESH,
+        "interval_s": REFRESH_INTERVAL_S,
+    }
+    if last is None:
+        return JSONResponse(body, status_code=503)
+    return body
+
+
 @app.post("/api/refresh")
-def refresh():
+async def refresh(authorization: str | None = Header(None)):
+    if REFRESH_TOKEN:
+        expected = f"Bearer {REFRESH_TOKEN}"
+        if authorization != expected:
+            raise HTTPException(status_code=401, detail="Admin token required")
+    if _ingest_lock.locked():
+        raise HTTPException(status_code=409, detail="Refresh already in progress")
     try:
-        result = ingest.run()
+        return await _run_ingest("manual")
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Refresh failed: {e}") from e
-    return result
 
 
 @app.get("/api/stats")
@@ -254,3 +340,68 @@ def validators():
         ]
     finally:
         conn.close()
+
+
+def _csv_response(filename: str, header: list[str], row_iter) -> Response:
+    out = io.StringIO()
+    w = csv.writer(out)
+    w.writerow(header)
+    w.writerows(row_iter)
+    return Response(
+        content=out.getvalue(),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+def _iso(ms: int | None) -> str:
+    if not ms:
+        return ""
+    return datetime.fromtimestamp(ms / 1000, tz=timezone.utc).isoformat()
+
+
+@app.get("/api/export/stakers.csv")
+def export_stakers(min_hype: float = Query(0, ge=0)):
+    conn = db.connect()
+    try:
+        rows = conn.execute(
+            "SELECT user, staked_wei, n_validators, last_action_ms FROM stakers "
+            "WHERE staked_wei >= ? ORDER BY staked_wei DESC",
+            (int(min_hype * WEI_PER_HYPE),),
+        ).fetchall()
+    finally:
+        conn.close()
+    return _csv_response(
+        "hype-stakers.csv",
+        ["address", "staked_hype", "n_validators", "last_action_iso"],
+        (
+            [r["user"], f"{r['staked_wei'] / WEI_PER_HYPE:.8f}", r["n_validators"], _iso(r["last_action_ms"])]
+            for r in rows
+        ),
+    )
+
+
+@app.get("/api/export/validators.csv")
+def export_validators():
+    conn = db.connect()
+    try:
+        rows = conn.execute(
+            "SELECT v.*, "
+            "  (SELECT COUNT(*) FROM staker_validators sv WHERE sv.validator=v.validator) AS n_delegators "
+            "FROM validators v ORDER BY stake_wei DESC"
+        ).fetchall()
+    finally:
+        conn.close()
+    return _csv_response(
+        "hype-validators.csv",
+        ["validator", "name", "stake_hype", "commission", "apr", "n_delegators", "is_active", "is_jailed"],
+        (
+            [
+                r["validator"], r["name"] or "",
+                f"{r['stake_wei'] / WEI_PER_HYPE:.8f}",
+                r["commission"] or "", r["apr"] or "",
+                r["n_delegators"], bool(r["is_active"]), bool(r["is_jailed"]),
+            ]
+            for r in rows
+        ),
+    )

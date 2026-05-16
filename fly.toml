@@ -21,7 +21,7 @@ primary_region = 'iad'
   force_https = true
   auto_stop_machines = 'off'
   auto_start_machines = true
-  min_machines_running = 2
+  min_machines_running = 1
 
   [[http_service.checks]]
     grace_period = "10s"
@@ -31,7 +31,7 @@ primary_region = 'iad'
     path = "/api/health"
 
 [deploy]
-  strategy = "rolling"
+  strategy = "bluegreen"
   wait_timeout = "5m"
 
 [[vm]]

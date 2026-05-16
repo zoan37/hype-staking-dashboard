@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>HYPE Staking Dashboard</title>
+<style>
+  :root {
+    --bg: #0b0f14;
+    --panel: #131a23;
+    --panel-2: #1a2330;
+    --border: #243042;
+    --text: #e6edf3;
+    --muted: #8b98a5;
+    --accent: #4ade80;
+    --accent-2: #38bdf8;
+    --warn: #f59e0b;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    background: var(--bg); color: var(--text); line-height: 1.45;
+  }
+  header {
+    padding: 18px 28px; border-bottom: 1px solid var(--border);
+    display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px;
+  }
+  header h1 { margin: 0; font-size: 18px; letter-spacing: 0.3px; }
+  header h1 span { color: var(--accent); }
+  .meta { color: var(--muted); font-size: 13px; }
+  button {
+    background: var(--accent); color: #06121a; border: 0; padding: 8px 14px;
+    border-radius: 6px; font-weight: 600; cursor: pointer; font-size: 13px;
+  }
+  button:disabled { opacity: 0.6; cursor: progress; }
+  button.secondary { background: var(--panel-2); color: var(--text); border: 1px solid var(--border); }
+  main { padding: 24px 28px; max-width: 1280px; margin: 0 auto; }
+
+  .grid { display: grid; gap: 14px; }
+  .cards { grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
+  .card {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 10px; padding: 14px 16px;
+  }
+  .card .label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.6px; }
+  .card .value { font-size: 22px; font-weight: 600; margin-top: 4px; }
+  .card .sub { color: var(--muted); font-size: 12px; margin-top: 2px; }
+
+  section { margin-top: 26px; }
+  section h2 { font-size: 14px; text-transform: uppercase; letter-spacing: 0.8px; color: var(--muted); margin: 0 0 10px; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { padding: 8px 10px; text-align: left; border-bottom: 1px solid var(--border); }
+  th { color: var(--muted); font-weight: 500; font-size: 12px; text-transform: uppercase; letter-spacing: 0.4px; }
+  tbody tr:hover { background: var(--panel-2); }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .addr { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; color: var(--accent-2); }
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 12px 16px; }
+
+  .filter { display: flex; flex-wrap: wrap; gap: 10px; align-items: end; margin-bottom: 12px; }
+  .filter label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
+  .filter input, .filter select {
+    background: var(--bg); color: var(--text); border: 1px solid var(--border);
+    padding: 6px 10px; border-radius: 6px; min-width: 110px; font-size: 13px;
+  }
+  .pager { display: flex; gap: 8px; align-items: center; margin-top: 10px; color: var(--muted); font-size: 13px; }
+
+  .bar-row { display: grid; grid-template-columns: 110px 1fr 110px 110px; gap: 10px; align-items: center; padding: 4px 0; }
+  .bar { background: var(--panel-2); border-radius: 4px; height: 16px; overflow: hidden; }
+  .bar-fill { background: linear-gradient(90deg, var(--accent), var(--accent-2)); height: 100%; }
+  .muted { color: var(--muted); }
+  .pill { display:inline-block; padding:2px 8px; border-radius:999px; font-size:11px; background: var(--panel-2); border:1px solid var(--border); color: var(--muted); }
+  .pill.warn { color: var(--warn); border-color: var(--warn); }
+  .empty { padding: 30px; text-align: center; color: var(--muted); }
+  #toast {
+    position: fixed; bottom: 20px; right: 20px; background: var(--panel-2);
+    border: 1px solid var(--border); padding: 10px 14px; border-radius: 8px;
+    opacity: 0; transition: opacity 0.2s; pointer-events: none; font-size: 13px;
+  }
+  #toast.show { opacity: 1; }
+</style>
+</head>
+<body>
+<header>
+  <h1>HYPE <span>Staking</span> Dashboard</h1>
+  <div style="display:flex; gap:14px; align-items:center;">
+    <div class="meta" id="lastRefresh">—</div>
+    <button id="refreshBtn">Refresh data</button>
+  </div>
+</header>
+
+<main>
+  <div id="emptyState" class="empty" style="display:none;">
+    No data yet. Click <strong>Refresh data</strong> to pull the latest from HypurrScan + Hyperliquid (~10–30s).
+  </div>
+
+  <section id="cardsSection">
+    <div class="grid cards" id="cards"></div>
+  </section>
+
+  <section>
+    <h2>Stake distribution</h2>
+    <div class="panel" id="buckets"></div>
+  </section>
+
+  <section>
+    <h2>Stakers</h2>
+    <div class="panel">
+      <div class="filter">
+        <label>Min HYPE
+          <input type="number" id="minHype" value="1000" min="0" step="1" />
+        </label>
+        <label>Max HYPE
+          <input type="number" id="maxHype" placeholder="(none)" min="0" step="1" />
+        </label>
+        <label>Sort
+          <select id="sort">
+            <option value="staked_desc">Stake (desc)</option>
+            <option value="staked_asc">Stake (asc)</option>
+            <option value="recent">Last action</option>
+          </select>
+        </label>
+        <label>Per page
+          <select id="limit">
+            <option>25</option><option selected>50</option><option>100</option><option>250</option>
+          </select>
+        </label>
+        <button id="applyFilter">Apply</button>
+        <button id="resetFilter" class="secondary">Reset</button>
+        <div style="flex:1"></div>
+        <div class="meta" id="stakerCount">—</div>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>Address</th>
+            <th class="num">Staked HYPE</th>
+            <th class="num">Validators</th>
+            <th class="num">Last action</th>
+          </tr>
+        </thead>
+        <tbody id="stakerBody"></tbody>
+      </table>
+      <div class="pager">
+        <button id="prevPage" class="secondary">‹ Prev</button>
+        <button id="nextPage" class="secondary">Next ›</button>
+        <span id="pageInfo"></span>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Validators</h2>
+    <div class="panel">
+      <table>
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>Name</th>
+            <th>Address</th>
+            <th class="num">Stake (HYPE)</th>
+            <th class="num">Commission</th>
+            <th class="num">APR</th>
+            <th class="num">Delegators</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody id="validatorBody"></tbody>
+      </table>
+    </div>
+  </section>
+</main>
+
+<div id="toast"></div>
+
+<script>
+const fmt = (n, d = 2) => n == null ? "—" : Number(n).toLocaleString(undefined, { maximumFractionDigits: d });
+const fmtInt = (n) => fmt(n, 0);
+const short = (a) => a.slice(0, 6) + "…" + a.slice(-4);
+const ago = (ms) => {
+  if (!ms) return "—";
+  const s = (Date.now() - ms) / 1000;
+  if (s < 60) return `${s|0}s ago`;
+  if (s < 3600) return `${(s/60)|0}m ago`;
+  if (s < 86400) return `${(s/3600)|0}h ago`;
+  return `${(s/86400)|0}d ago`;
+};
+function toast(msg) {
+  const t = document.getElementById("toast");
+  t.textContent = msg; t.classList.add("show");
+  clearTimeout(window._toastT);
+  window._toastT = setTimeout(() => t.classList.remove("show"), 2500);
+}
+
+let page = { offset: 0, limit: 50, total: 0 };
+
+async function refresh() {
+  const btn = document.getElementById("refreshBtn");
+  btn.disabled = true; btn.textContent = "Refreshing…";
+  try {
+    const r = await fetch("/api/refresh", { method: "POST" });
+    if (!r.ok) throw new Error(await r.text());
+    const j = await r.json();
+    toast(`Refreshed: ${fmtInt(j.events)} events in ${j.seconds.toFixed(1)}s`);
+    await loadAll();
+  } catch (e) {
+    toast("Refresh failed: " + e.message);
+  } finally {
+    btn.disabled = false; btn.textContent = "Refresh data";
+  }
+}
+
+async function loadStats() {
+  const r = await fetch("/api/stats");
+  const s = await r.json();
+  const empty = document.getElementById("emptyState");
+  if (s.empty) {
+    empty.style.display = "block";
+    document.getElementById("cardsSection").style.display = "none";
+    document.getElementById("lastRefresh").textContent = "no data";
+    return null;
+  }
+  empty.style.display = "none";
+  document.getElementById("cardsSection").style.display = "";
+  document.getElementById("lastRefresh").textContent = "Updated " + ago(s.last_refresh_ms);
+
+  const cards = [
+    { label: "Total HYPE staked", value: fmt(s.total_staked_hype, 0), sub: fmt(s.validator_total_hype, 0) + " by validators" },
+    { label: "Unique stakers", value: fmtInt(s.n_stakers) },
+    { label: "Active validators", value: fmtInt(s.n_active_validators) },
+    { label: "≥ 100 HYPE", value: fmtInt(s.thresholds[100]) },
+    { label: "≥ 1,000 HYPE", value: fmtInt(s.thresholds[1000]) },
+    { label: "≥ 10,000 HYPE", value: fmtInt(s.thresholds[10000]) },
+    { label: "≥ 100,000 HYPE", value: fmtInt(s.thresholds[100000]) },
+    { label: "≥ 1,000,000 HYPE", value: fmtInt(s.thresholds[1000000]) },
+    { label: "Unstaking queue", value: fmtInt(s.unstaking_queue_count), sub: fmt(s.unstaking_queue_hype, 0) + " HYPE" },
+    { label: "Delegation events", value: fmtInt(s.n_events), sub: fmtInt(s.n_failed_events) + " failed" },
+  ];
+  document.getElementById("cards").innerHTML = cards.map(c => `
+    <div class="card">
+      <div class="label">${c.label}</div>
+      <div class="value">${c.value}</div>
+      ${c.sub ? `<div class="sub">${c.sub}</div>` : ""}
+    </div>
+  `).join("");
+
+  const maxN = Math.max(...s.buckets.map(b => b.n_stakers), 1);
+  document.getElementById("buckets").innerHTML = s.buckets.map(b => `
+    <div class="bar-row">
+      <div>${b.label} HYPE</div>
+      <div class="bar"><div class="bar-fill" style="width:${(b.n_stakers / maxN * 100).toFixed(1)}%"></div></div>
+      <div class="num">${fmtInt(b.n_stakers)} stakers</div>
+      <div class="num muted">${fmt(b.hype, 0)} HYPE</div>
+    </div>
+  `).join("");
+  return s;
+}
+
+async function loadStakers() {
+  const min = document.getElementById("minHype").value || 0;
+  const maxRaw = document.getElementById("maxHype").value;
+  const sort = document.getElementById("sort").value;
+  page.limit = parseInt(document.getElementById("limit").value, 10);
+  const params = new URLSearchParams({ min_hype: min, sort, limit: page.limit, offset: page.offset });
+  if (maxRaw) params.set("max_hype", maxRaw);
+  const r = await fetch("/api/stakers?" + params);
+  const j = await r.json();
+  page.total = j.total;
+  document.getElementById("stakerCount").textContent =
+    `${fmtInt(j.total)} stakers match`;
+  document.getElementById("stakerBody").innerHTML = j.results.map((s, i) => `
+    <tr>
+      <td class="muted">${page.offset + i + 1}</td>
+      <td><span class="addr">${s.user}</span></td>
+      <td class="num">${fmt(s.staked_hype, 4)}</td>
+      <td class="num">${s.n_validators}</td>
+      <td class="num muted">${ago(s.last_action_ms)}</td>
+    </tr>
+  `).join("") || `<tr><td colspan="5" class="empty">No stakers match.</td></tr>`;
+  const last = Math.min(page.offset + page.limit, page.total);
+  document.getElementById("pageInfo").textContent =
+    page.total ? `${page.offset + 1}–${last} of ${fmtInt(page.total)}` : "";
+}
+
+async function loadValidators() {
+  const r = await fetch("/api/validators");
+  const vs = await r.json();
+  document.getElementById("validatorBody").innerHTML = vs.map((v, i) => `
+    <tr>
+      <td class="muted">${i + 1}</td>
+      <td>${v.name || "—"}</td>
+      <td><span class="addr">${short(v.validator)}</span></td>
+      <td class="num">${fmt(v.stake_hype, 0)}</td>
+      <td class="num">${v.commission ? (parseFloat(v.commission) * 100).toFixed(2) + "%" : "—"}</td>
+      <td class="num">${v.apr ? (parseFloat(v.apr) * 100).toFixed(2) + "%" : "—"}</td>
+      <td class="num">${fmtInt(v.n_delegators)}</td>
+      <td>${v.is_jailed ? '<span class="pill warn">jailed</span>' : v.is_active ? '<span class="pill">active</span>' : '<span class="pill warn">inactive</span>'}</td>
+    </tr>
+  `).join("");
+}
+
+async function loadAll() {
+  const s = await loadStats();
+  if (s) {
+    await Promise.all([loadStakers(), loadValidators()]);
+  }
+}
+
+document.getElementById("refreshBtn").addEventListener("click", refresh);
+document.getElementById("applyFilter").addEventListener("click", () => { page.offset = 0; loadStakers(); });
+document.getElementById("resetFilter").addEventListener("click", () => {
+  document.getElementById("minHype").value = 0;
+  document.getElementById("maxHype").value = "";
+  document.getElementById("sort").value = "staked_desc";
+  page.offset = 0; loadStakers();
+});
+document.getElementById("prevPage").addEventListener("click", () => {
+  page.offset = Math.max(0, page.offset - page.limit); loadStakers();
+});
+document.getElementById("nextPage").addEventListener("click", () => {
+  if (page.offset + page.limit < page.total) { page.offset += page.limit; loadStakers(); }
+});
+
+loadAll();
+</script>
+</body>
+</html>

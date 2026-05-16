@@ -214,21 +214,31 @@ let page = { offset: 0, limit: 50, total: 0 };
 
 let emptyPollT = null;
 
+function setLoadingState(loading, label) {
+  document.getElementById("emptyState").style.display = loading ? "block" : "none";
+  document.querySelectorAll("main > section").forEach(s => {
+    s.style.display = loading ? "none" : "";
+  });
+  document.getElementById("lastRefresh").textContent = label;
+  if (loading && !emptyPollT) emptyPollT = setInterval(loadAll, 5000);
+  if (!loading && emptyPollT) { clearInterval(emptyPollT); emptyPollT = null; }
+}
+
 async function loadStats() {
-  const r = await fetch("/api/stats");
-  const s = await r.json();
-  const empty = document.getElementById("emptyState");
-  if (s.empty) {
-    empty.style.display = "block";
-    document.getElementById("cardsSection").style.display = "none";
-    document.getElementById("lastRefresh").textContent = "loading…";
-    if (!emptyPollT) emptyPollT = setInterval(loadAll, 5000);
+  let s;
+  try {
+    const r = await fetch("/api/stats");
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    s = await r.json();
+  } catch (e) {
+    setLoadingState(true, "reconnecting…");
     return null;
   }
-  if (emptyPollT) { clearInterval(emptyPollT); emptyPollT = null; }
-  empty.style.display = "none";
-  document.getElementById("cardsSection").style.display = "";
-  document.getElementById("lastRefresh").textContent = "Updated " + ago(s.last_refresh_ms);
+  if (s.empty) {
+    setLoadingState(true, "loading…");
+    return null;
+  }
+  setLoadingState(false, "Updated " + ago(s.last_refresh_ms));
 
   const cards = [
     { label: "Total HYPE staked", value: fmt(s.total_staked_hype, 0), sub: fmt(s.validator_total_hype, 0) + " by validators" },
@@ -308,7 +318,10 @@ async function loadValidators() {
 async function loadAll() {
   const s = await loadStats();
   if (s) {
-    await Promise.all([loadStakers(), loadValidators()]);
+    await Promise.all([
+      loadStakers().catch(e => console.warn("stakers load failed", e)),
+      loadValidators().catch(e => console.warn("validators load failed", e)),
+    ]);
   }
 }
 

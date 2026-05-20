@@ -84,6 +84,12 @@
   .pill { display:inline-block; padding:2px 8px; border-radius:999px; font-size:11px; background: var(--panel-2); border:1px solid var(--border); color: var(--muted); }
   .pill.warn { color: var(--warn); border-color: var(--warn); }
   .empty { padding: 30px; text-align: center; color: var(--muted); }
+  .chart-title { font-size: 13px; color: var(--text); font-weight: 600; margin-bottom: 6px; }
+  .chart-title .muted { font-weight: 400; font-size: 11px; }
+  .chart svg { display: block; }
+  .legend { display: flex; gap: 16px; flex-wrap: wrap; margin-top: 8px; font-size: 12px; color: var(--muted); }
+  .legend .leg { display: inline-flex; align-items: center; gap: 6px; }
+  .legend .leg i { width: 11px; height: 3px; border-radius: 2px; display: inline-block; }
   #toast {
     position: fixed; bottom: 20px; right: 20px; background: var(--panel-2);
     border: 1px solid var(--border); padding: 10px 14px; border-radius: 8px;
@@ -113,6 +119,25 @@
 
   <section id="cardsSection">
     <div class="grid cards" id="cards"></div>
+  </section>
+
+  <section id="historySection">
+    <h2>Growth over time <span class="meta" style="text-transform:none;letter-spacing:0;">weekly · reconstructed from delegation events (±~3%)</span></h2>
+    <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(360px,1fr));">
+      <div class="panel">
+        <div class="chart-title">Unique stakers</div>
+        <div class="chart" id="chartStakers"></div>
+      </div>
+      <div class="panel">
+        <div class="chart-title">Total HYPE staked</div>
+        <div class="chart" id="chartStaked"></div>
+      </div>
+    </div>
+    <div class="panel" style="margin-top:14px;">
+      <div class="chart-title">Stakers by minimum size <span class="muted">— log scale</span></div>
+      <div class="chart" id="chartTiers"></div>
+      <div class="legend" id="tiersLegend"></div>
+    </div>
   </section>
 
   <section>
@@ -195,6 +220,71 @@
 const fmt = (n, d = 2) => n == null ? "—" : Number(n).toLocaleString(undefined, { maximumFractionDigits: d });
 const fmtInt = (n) => fmt(n, 0);
 const short = (a) => a.slice(0, 6) + "…" + a.slice(-4);
+const fmtCompact = (n) => {
+  n = Number(n); const a = Math.abs(n);
+  if (a >= 1e9) return (n / 1e9).toFixed(a >= 1e10 ? 0 : 1) + "B";
+  if (a >= 1e6) return (n / 1e6).toFixed(a >= 1e7 ? 0 : 1) + "M";
+  if (a >= 1e3) return (n / 1e3).toFixed(a >= 1e4 ? 0 : 1) + "k";
+  return String(Math.round(n));
+};
+const fmtMonth = (ms) => new Date(ms).toLocaleDateString(undefined, { month: "short", year: "2-digit" });
+const HYPE_COLORS = ["#4ade80", "#38bdf8", "#f59e0b", "#a78bfa", "#f472b6"];
+
+function niceStep(max) {
+  const raw = (max || 1) / 4;
+  const mag = Math.pow(10, Math.floor(Math.log10(raw)));
+  const n = raw / mag;
+  return (n <= 1 ? 1 : n <= 2 ? 2 : n <= 5 ? 5 : 10) * mag;
+}
+
+// Inline SVG line chart. lines: [{color, values:[num|null]}]; log toggles a log10 y-axis.
+function lineChart({ periods, lines, log = false }) {
+  if (!periods || periods.length === 0) return "";
+  const W = 820, H = 250, mL = 42, mR = 12, mT = 12, mB = 26;
+  const iw = W - mL - mR, ih = H - mT - mB;
+  const x0 = periods[0], x1 = periods[periods.length - 1];
+  const xS = (ms) => mL + (x1 === x0 ? 0 : (ms - x0) / (x1 - x0)) * iw;
+
+  let lo = Infinity, hi = -Infinity;
+  for (const l of lines) for (const v of l.values) if (v != null) { lo = Math.min(lo, v); hi = Math.max(hi, v); }
+  if (!isFinite(lo)) { lo = 0; hi = 1; }
+
+  let yS, yticks;
+  if (log) {
+    const a = Math.floor(Math.log10(Math.max(1, lo)));
+    const b = Math.max(a + 1, Math.ceil(Math.log10(Math.max(10, hi))));
+    yS = (v) => mT + ih - ((Math.log10(Math.max(1, v)) - a) / (b - a)) * ih;
+    yticks = []; for (let p = a; p <= b; p++) yticks.push(Math.pow(10, p));
+  } else {
+    const step = niceStep(hi);
+    const top = Math.max(step, Math.ceil(hi / step) * step);
+    yS = (v) => mT + ih - (v / top) * ih;
+    yticks = []; for (let v = 0; v <= top + 1e-9; v += step) yticks.push(v);
+  }
+
+  let svg = `<svg viewBox="0 0 ${W} ${H}" width="100%" preserveAspectRatio="xMidYMid meet" font-family="inherit">`;
+  for (const t of yticks) {
+    const y = yS(t).toFixed(1);
+    svg += `<line x1="${mL}" y1="${y}" x2="${W - mR}" y2="${y}" stroke="#243042" stroke-width="1"/>`;
+    svg += `<text x="${mL - 6}" y="${y}" fill="#8b98a5" font-size="10" text-anchor="end" dominant-baseline="middle">${fmtCompact(t)}</text>`;
+  }
+  const stepX = Math.max(1, Math.ceil(periods.length / 6));
+  for (let i = 0; i < periods.length; i += stepX) {
+    svg += `<text x="${xS(periods[i]).toFixed(1)}" y="${H - 6}" fill="#8b98a5" font-size="10" text-anchor="middle">${fmtMonth(periods[i])}</text>`;
+  }
+  for (const l of lines) {
+    let d = "", started = false;
+    l.values.forEach((v, i) => {
+      if (v == null) return;
+      d += (started ? "L" : "M") + xS(periods[i]).toFixed(1) + " " + yS(v).toFixed(1) + " ";
+      started = true;
+    });
+    svg += `<path d="${d.trim()}" fill="none" stroke="${l.color}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`;
+    const li = l.values.length - 1, lv = l.values[li];
+    if (lv != null) svg += `<circle cx="${xS(periods[li]).toFixed(1)}" cy="${yS(lv).toFixed(1)}" r="2.5" fill="${l.color}"/>`;
+  }
+  return svg + "</svg>";
+}
 const ago = (ms) => {
   if (!ms) return "—";
   const s = (Date.now() - ms) / 1000;
@@ -298,6 +388,40 @@ async function loadStakers() {
     page.total ? `${page.offset + 1}–${last} of ${fmtInt(page.total)}` : "";
 }
 
+async function loadHistory() {
+  let h;
+  try {
+    const r = await fetch("/api/staker-history");
+    if (!r.ok) return;
+    h = await r.json();
+  } catch { return; }
+
+  const section = document.getElementById("historySection");
+  if (!h.periods || h.periods.length === 0) { section.style.display = "none"; return; }
+  section.style.display = "";
+
+  const byThr = {};
+  h.series.forEach((s) => { byThr[s.threshold_hype] = s.counts; });
+
+  document.getElementById("chartStakers").innerHTML = lineChart({
+    periods: h.periods,
+    lines: [{ color: "#4ade80", values: byThr[0] || [] }],
+  });
+  document.getElementById("chartStaked").innerHTML = lineChart({
+    periods: h.periods,
+    lines: [{ color: "#38bdf8", values: h.total_staked_hype }],
+  });
+
+  const tiers = [[1000, "≥ 1k"], [10000, "≥ 10k"], [100000, "≥ 100k"], [1000000, "≥ 1M"]];
+  const lines = tiers
+    .filter((t) => byThr[t[0]])
+    .map((t, i) => ({ label: t[1], color: HYPE_COLORS[i % HYPE_COLORS.length], values: byThr[t[0]] }));
+  document.getElementById("chartTiers").innerHTML = lineChart({ periods: h.periods, lines, log: true });
+  document.getElementById("tiersLegend").innerHTML = lines
+    .map((l) => `<span class="leg"><i style="background:${l.color}"></i>${l.label} HYPE</span>`)
+    .join("");
+}
+
 async function loadValidators() {
   const r = await fetch("/api/validators");
   const vs = await r.json();
@@ -321,6 +445,7 @@ async function loadAll() {
     await Promise.all([
       loadStakers().catch(e => console.warn("stakers load failed", e)),
       loadValidators().catch(e => console.warn("validators load failed", e)),
+      loadHistory().catch(e => console.warn("history load failed", e)),
     ]);
   }
 }

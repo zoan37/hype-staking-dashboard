@@ -52,6 +52,18 @@ CREATE TABLE IF NOT EXISTS unstaking_queue (
     PRIMARY KEY (user, time_ms, wei)
 );
 
+-- Per-period snapshots of staker counts, reconstructed by replaying events.
+-- threshold_hype = 0 is the total (>0); other rows count stakers with
+-- net stake >= threshold_hype HYPE. total_staked_wei is the same for every
+-- threshold in a period (it's a per-period figure, duplicated for easy querying).
+CREATE TABLE IF NOT EXISTS staker_history (
+    period_start_ms  INTEGER NOT NULL,
+    threshold_hype   INTEGER NOT NULL,
+    n_stakers        INTEGER NOT NULL,
+    total_staked_wei INTEGER NOT NULL,
+    PRIMARY KEY (period_start_ms, threshold_hype)
+);
+
 CREATE TABLE IF NOT EXISTS meta (
     key   TEXT PRIMARY KEY,
     value TEXT

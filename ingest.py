@@ -18,6 +18,11 @@ HYPERLIQUID = "https://api.hyperliquid.xyz"
 TIMEOUT = 120.0
 EVENT_BATCH = 10_000
 
+WEI_PER_HYPE = 100_000_000  # HYPE has 8 decimals on the staking layer
+WEEK_MS = 7 * 24 * 60 * 60 * 1000
+# Stake thresholds (in HYPE) tracked over time. 0 = total stakers (>0).
+HISTORY_TIERS = [0, 100, 1_000, 10_000, 100_000, 1_000_000]
+
 INSERT_EVENT_SQL = (
     "INSERT OR REPLACE INTO events"
     "(hash,time_ms,user,validator,wei,is_undelegate,error,block) "
@@ -141,6 +146,64 @@ def rebuild_stakers(conn):
     )
 
 
+def rebuild_staker_history(conn):
+    """Replay events chronologically and snapshot staker counts per week.
+
+    Mirrors rebuild_stakers exactly — net stake is tracked per (user, validator)
+    pair and each pair is clamped at >= 0 before summing per user — so the final
+    weekly point matches the live `stakers` table. (A pair can go negative in
+    replay because rewards/redelegation add stake without a delegate event; the
+    canonical table drops those, so we do too.) Fully-unstaked users net to 0 and
+    are excluded, so we never count someone who staked and later left. Counts
+    still carry the documented ~3% replay drift, so treat them as trend-grade.
+    """
+    tier_wei = [t * WEI_PER_HYPE for t in HISTORY_TIERS]
+    pair_stake: dict[tuple[str, str], int] = defaultdict(int)
+    user_pos: dict[str, int] = defaultdict(int)  # sum of each user's positive pairs
+    rows_out: list[tuple] = []
+
+    def snapshot(period_ms: int):
+        counts = [0] * len(tier_wei)
+        total = 0
+        for w in user_pos.values():
+            if w <= 0:
+                continue
+            total += w
+            for i, tw in enumerate(tier_wei):
+                if w >= tw:
+                    counts[i] += 1
+        for i, t in enumerate(HISTORY_TIERS):
+            rows_out.append((period_ms, t, counts[i], total))
+
+    cur = conn.execute(
+        "SELECT user, validator, wei, is_undelegate, time_ms FROM events "
+        "WHERE error IS NULL ORDER BY time_ms ASC"
+    )
+    cur_week: int | None = None
+    for user, validator, wei, is_undel, t in cur:
+        wk = t - (t % WEEK_MS)
+        if cur_week is None:
+            cur_week = wk
+        elif wk != cur_week:
+            snapshot(cur_week)  # state as of the end of the prior week
+            cur_week = wk
+        key = (user, validator)
+        old = pair_stake[key]
+        new = old + (-wei if is_undel else wei)
+        pair_stake[key] = new
+        # keep user_pos = sum of clamped-positive pairs, matching rebuild_stakers
+        user_pos[user] += max(new, 0) - max(old, 0)
+    if cur_week is not None:
+        snapshot(cur_week)
+
+    conn.execute("DELETE FROM staker_history")
+    conn.executemany(
+        "INSERT INTO staker_history"
+        "(period_start_ms,threshold_hype,n_stakers,total_staked_wei) VALUES(?,?,?,?)",
+        rows_out,
+    )
+
+
 def rebuild_validators(conn, vs: list[dict]):
     conn.execute("DELETE FROM validators")
     rows = []
@@ -194,6 +257,7 @@ def run() -> dict:
         n_events = stream_and_insert_events(conn)
         print(f"  {n_events:,} events")
         rebuild_stakers(conn)
+        rebuild_staker_history(conn)
         rebuild_unstaking(conn, queue)
         rebuild_validators(conn, validators)
         db.set_meta(conn, "last_refresh_ms", str(int(time.time() * 1000)))

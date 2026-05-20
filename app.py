@@ -212,6 +212,42 @@ def stats():
         conn.close()
 
 
+@app.get("/api/staker-history")
+def staker_history():
+    conn = db.connect()
+    try:
+        rows = conn.execute(
+            "SELECT period_start_ms, threshold_hype, n_stakers, total_staked_wei "
+            "FROM staker_history ORDER BY period_start_ms ASC, threshold_hype ASC"
+        ).fetchall()
+
+        periods: list[int] = []
+        seen: set[int] = set()
+        total_staked: dict[int, float] = {}
+        series: dict[int, dict[int, int]] = {}
+        for r in rows:
+            ms = r["period_start_ms"]
+            if ms not in seen:
+                seen.add(ms)
+                periods.append(ms)
+            series.setdefault(r["threshold_hype"], {})[ms] = r["n_stakers"]
+            total_staked[ms] = r["total_staked_wei"] / WEI_PER_HYPE
+
+        return {
+            "periods": periods,
+            "series": [
+                {
+                    "threshold_hype": thr,
+                    "counts": [series[thr].get(ms) for ms in periods],
+                }
+                for thr in sorted(series)
+            ],
+            "total_staked_hype": [total_staked.get(ms) for ms in periods],
+        }
+    finally:
+        conn.close()
+
+
 @app.get("/api/stakers")
 def stakers(
     min_hype: float = Query(0, ge=0),

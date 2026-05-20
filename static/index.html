@@ -86,7 +86,18 @@
   .empty { padding: 30px; text-align: center; color: var(--muted); }
   .chart-title { font-size: 13px; color: var(--text); font-weight: 600; margin-bottom: 6px; }
   .chart-title .muted { font-weight: 400; font-size: 11px; }
+  .chart { position: relative; }
   .chart svg { display: block; }
+  .chart-tt {
+    position: absolute; pointer-events: none; z-index: 5; opacity: 0;
+    transition: opacity 0.1s; background: var(--panel-2); border: 1px solid var(--border);
+    border-radius: 6px; padding: 6px 9px; font-size: 12px; color: var(--text);
+    white-space: nowrap; box-shadow: 0 4px 14px rgba(0,0,0,0.45);
+  }
+  .chart-tt .tt-date { color: var(--muted); font-size: 11px; margin-bottom: 4px; }
+  .chart-tt .tt-row { display: flex; align-items: center; gap: 7px; line-height: 1.7; }
+  .chart-tt .tt-row i { width: 9px; height: 9px; border-radius: 2px; display: inline-block; flex: none; }
+  .chart-tt .tt-row b { margin-left: auto; padding-left: 14px; font-variant-numeric: tabular-nums; }
   .legend { display: flex; gap: 16px; flex-wrap: wrap; margin-top: 8px; font-size: 12px; color: var(--muted); }
   .legend .leg { display: inline-flex; align-items: center; gap: 6px; }
   .legend .leg i { width: 11px; height: 3px; border-radius: 2px; display: inline-block; }
@@ -228,6 +239,7 @@ const fmtCompact = (n) => {
   return String(Math.round(n));
 };
 const fmtMonth = (ms) => new Date(ms).toLocaleDateString(undefined, { month: "short", year: "2-digit" });
+const fmtFullDate = (ms) => "Week of " + new Date(ms).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
 const HYPE_COLORS = ["#4ade80", "#38bdf8", "#f59e0b", "#a78bfa", "#f472b6"];
 
 function niceStep(max) {
@@ -238,8 +250,11 @@ function niceStep(max) {
 }
 
 // Inline SVG line chart. lines: [{color, values:[num|null]}]; log toggles a log10 y-axis.
-function lineChart({ periods, lines, log = false }) {
-  if (!periods || periods.length === 0) return "";
+// Renders an inline-SVG line chart into `el` and wires up a hover crosshair +
+// tooltip that snaps to the nearest weekly point. fmt formats tooltip values.
+function renderChart(el, { periods, lines, log = false, fmt = fmtInt }) {
+  el.innerHTML = "";
+  if (!periods || periods.length === 0) return;
   const W = 820, H = 250, mL = 42, mR = 12, mT = 12, mB = 26;
   const iw = W - mL - mR, ih = H - mT - mB;
   const x0 = periods[0], x1 = periods[periods.length - 1];
@@ -283,7 +298,51 @@ function lineChart({ periods, lines, log = false }) {
     const li = l.values.length - 1, lv = l.values[li];
     if (lv != null) svg += `<circle cx="${xS(periods[li]).toFixed(1)}" cy="${yS(lv).toFixed(1)}" r="2.5" fill="${l.color}"/>`;
   }
-  return svg + "</svg>";
+  // hover layer: vertical crosshair + per-line markers, hidden until hover
+  svg += `<line class="cx-line" x1="0" y1="${mT}" x2="0" y2="${H - mB}" stroke="#8b98a5" stroke-width="1" stroke-dasharray="3 3" style="display:none"/>`;
+  svg += `<g class="cx-dots"></g></svg>`;
+
+  el.style.position = "relative";
+  el.innerHTML = svg;
+  const tt = document.createElement("div");
+  tt.className = "chart-tt";
+  el.appendChild(tt);
+
+  const svgEl = el.querySelector("svg");
+  const cxLine = svgEl.querySelector(".cx-line");
+  const cxDots = svgEl.querySelector(".cx-dots");
+
+  function hide() { cxLine.style.display = "none"; cxDots.innerHTML = ""; tt.style.opacity = "0"; }
+  function move(e) {
+    const rect = svgEl.getBoundingClientRect();
+    const vbX = (e.clientX - rect.left) * (W / rect.width);
+    let bi = 0, bd = Infinity;
+    for (let i = 0; i < periods.length; i++) {
+      const dx = Math.abs(xS(periods[i]) - vbX);
+      if (dx < bd) { bd = dx; bi = i; }
+    }
+    const px = xS(periods[bi]);
+    cxLine.setAttribute("x1", px); cxLine.setAttribute("x2", px);
+    cxLine.style.display = "";
+    let dots = "", rows = "";
+    for (const l of lines) {
+      const v = l.values[bi];
+      if (v == null) continue;
+      dots += `<circle cx="${px.toFixed(1)}" cy="${yS(v).toFixed(1)}" r="3.5" fill="${l.color}" stroke="#0b0f14" stroke-width="1.5"/>`;
+      rows += `<div class="tt-row"><i style="background:${l.color}"></i>${l.label || ""}<b>${fmt(v)}</b></div>`;
+    }
+    cxDots.innerHTML = dots;
+    tt.innerHTML = `<div class="tt-date">${fmtFullDate(periods[bi])}</div>${rows}`;
+    tt.style.opacity = "1";
+    const er = el.getBoundingClientRect(), tr = tt.getBoundingClientRect();
+    let left = e.clientX - er.left + 14, top = e.clientY - er.top + 14;
+    if (left + tr.width > er.width) left = e.clientX - er.left - tr.width - 14;
+    if (top + tr.height > er.height) top = er.height - tr.height - 4;
+    tt.style.left = Math.max(2, left) + "px";
+    tt.style.top = Math.max(2, top) + "px";
+  }
+  svgEl.addEventListener("mousemove", move);
+  svgEl.addEventListener("mouseleave", hide);
 }
 const ago = (ms) => {
   if (!ms) return "—";
@@ -403,20 +462,22 @@ async function loadHistory() {
   const byThr = {};
   h.series.forEach((s) => { byThr[s.threshold_hype] = s.counts; });
 
-  document.getElementById("chartStakers").innerHTML = lineChart({
+  renderChart(document.getElementById("chartStakers"), {
     periods: h.periods,
-    lines: [{ color: "#4ade80", values: byThr[0] || [] }],
+    lines: [{ label: "Stakers", color: "#4ade80", values: byThr[0] || [] }],
+    fmt: fmtInt,
   });
-  document.getElementById("chartStaked").innerHTML = lineChart({
+  renderChart(document.getElementById("chartStaked"), {
     periods: h.periods,
-    lines: [{ color: "#38bdf8", values: h.total_staked_hype }],
+    lines: [{ label: "HYPE staked", color: "#38bdf8", values: h.total_staked_hype }],
+    fmt: (v) => fmt(v, 0),
   });
 
   const tiers = [[1000, "≥ 1k"], [10000, "≥ 10k"], [100000, "≥ 100k"], [1000000, "≥ 1M"]];
   const lines = tiers
     .filter((t) => byThr[t[0]])
-    .map((t, i) => ({ label: t[1], color: HYPE_COLORS[i % HYPE_COLORS.length], values: byThr[t[0]] }));
-  document.getElementById("chartTiers").innerHTML = lineChart({ periods: h.periods, lines, log: true });
+    .map((t, i) => ({ label: t[1] + " HYPE", color: HYPE_COLORS[i % HYPE_COLORS.length], values: byThr[t[0]] }));
+  renderChart(document.getElementById("chartTiers"), { periods: h.periods, lines, log: true, fmt: fmtInt });
   document.getElementById("tiersLegend").innerHTML = lines
     .map((l) => `<span class="leg"><i style="background:${l.color}"></i>${l.label} HYPE</span>`)
     .join("");

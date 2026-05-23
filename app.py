@@ -29,6 +29,23 @@ BUCKETS = [
     (1_000_000, None, "≥1M"),
 ]
 
+# PURR is a spot token (5 decimals); balances are stored as plain PURR units.
+PURR_BUCKETS = [
+    (0, 100, "<100"),
+    (100, 1_000, "100–1k"),
+    (1_000, 10_000, "1k–10k"),
+    (10_000, 100_000, "10k–100k"),
+    (100_000, 1_000_000, "100k–1M"),
+    (1_000_000, 10_000_000, "1M–10M"),
+    (10_000_000, None, "≥10M"),
+]
+# Burn + Hyperliquid system addresses hold locked/burned supply, not real
+# holders — excluded from the distribution but disclosed via `excluded`.
+PURR_SYSTEM_ADDRESSES = [
+    "0xffffffffffffffffffffffffffffffffffffffff",  # burn / null address
+    "0x2000000000000000000000000000000000000001",  # Hyperliquid system address
+]
+
 REFRESH_TOKEN = os.environ.get("REFRESH_TOKEN")
 AUTO_REFRESH = os.environ.get("AUTO_REFRESH", "0") == "1"
 REFRESH_INTERVAL_S = int(os.environ.get("REFRESH_INTERVAL_S", "3600"))
@@ -94,6 +111,11 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 @app.get("/")
 def index():
     return FileResponse(STATIC_DIR / "index.html")
+
+
+@app.get("/purr")
+def purr_page():
+    return FileResponse(STATIC_DIR / "purr.html")
 
 
 @app.get("/api/health")
@@ -243,6 +265,118 @@ def staker_history():
                 for thr in sorted(series)
             ],
             "total_staked_hype": [total_staked.get(ms) for ms in periods],
+        }
+    finally:
+        conn.close()
+
+
+@app.get("/api/purr-stats")
+def purr_stats():
+    """Distribution of PURR spot-token holders, excluding burn/system addresses."""
+    conn = db.connect()
+    try:
+        n_total = conn.execute("SELECT COUNT(*) AS c FROM purr_holders").fetchone()["c"]
+        if n_total == 0:
+            return {"empty": True}
+
+        sys_addrs = PURR_SYSTEM_ADDRESSES
+        placeholders = ",".join("?" * len(sys_addrs))
+        excl = f"address NOT IN ({placeholders})"
+
+        totals = conn.execute(
+            f"SELECT COUNT(*) AS n, COALESCE(SUM(balance),0) AS s "
+            f"FROM purr_holders WHERE {excl}",
+            sys_addrs,
+        ).fetchone()
+
+        buckets = []
+        for lo, hi, label in PURR_BUCKETS:
+            if hi is None:
+                row = conn.execute(
+                    f"SELECT COUNT(*) AS n, COALESCE(SUM(balance),0) AS s "
+                    f"FROM purr_holders WHERE {excl} AND balance >= ?",
+                    sys_addrs + [lo],
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    f"SELECT COUNT(*) AS n, COALESCE(SUM(balance),0) AS s "
+                    f"FROM purr_holders WHERE {excl} AND balance >= ? AND balance < ?",
+                    sys_addrs + [lo, hi],
+                ).fetchone()
+            buckets.append(
+                {
+                    "label": label,
+                    "min_purr": lo,
+                    "max_purr": hi,
+                    "n_holders": row["n"],
+                    "purr": row["s"],
+                }
+            )
+
+        top = conn.execute(
+            f"SELECT address, balance FROM purr_holders WHERE {excl} "
+            f"ORDER BY balance DESC LIMIT 10",
+            sys_addrs,
+        ).fetchall()
+        excluded = conn.execute(
+            f"SELECT address, balance FROM purr_holders WHERE address IN ({placeholders}) "
+            f"ORDER BY balance DESC",
+            sys_addrs,
+        ).fetchall()
+
+        last_update = db.get_meta(conn, "purr_last_update_ms")
+        return {
+            "empty": False,
+            "last_update_ms": int(last_update) if last_update else None,
+            "n_holders": totals["n"],
+            "total_purr": totals["s"],
+            "buckets": buckets,
+            "top": [{"address": r["address"], "purr": r["balance"]} for r in top],
+            "excluded": [{"address": r["address"], "purr": r["balance"]} for r in excluded],
+        }
+    finally:
+        conn.close()
+
+
+@app.get("/api/purr-holders")
+def purr_holders(
+    min_purr: float = Query(0, ge=0),
+    max_purr: float | None = Query(None, ge=0),
+    limit: int = Query(100, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
+    sort: str = Query("balance_desc", regex="^(balance_desc|balance_asc)$"),
+):
+    conn = db.connect()
+    try:
+        where = ["balance >= ?"]
+        params: list = [min_purr]
+        if max_purr is not None:
+            where.append("balance <= ?")
+            params.append(max_purr)
+        where_sql = " AND ".join(where)
+        order = "balance DESC" if sort == "balance_desc" else "balance ASC"
+
+        total = conn.execute(
+            f"SELECT COUNT(*) AS c FROM purr_holders WHERE {where_sql}", params
+        ).fetchone()["c"]
+        rows = conn.execute(
+            f"SELECT address, balance FROM purr_holders WHERE {where_sql} "
+            f"ORDER BY {order} LIMIT ? OFFSET ?",
+            params + [limit, offset],
+        ).fetchall()
+
+        return {
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+            "results": [
+                {
+                    "address": r["address"],
+                    "purr": r["balance"],
+                    "is_system": r["address"] in PURR_SYSTEM_ADDRESSES,
+                }
+                for r in rows
+            ],
         }
     finally:
         conn.close()
@@ -412,6 +546,27 @@ def export_stakers(min_hype: float = Query(0, ge=0)):
         ["address", "staked_hype", "n_validators", "last_action_iso"],
         (
             [r["user"], f"{r['staked_wei'] / WEI_PER_HYPE:.8f}", r["n_validators"], _iso(r["last_action_ms"])]
+            for r in rows
+        ),
+    )
+
+
+@app.get("/api/export/purr-holders.csv")
+def export_purr_holders(min_purr: float = Query(0, ge=0)):
+    conn = db.connect()
+    try:
+        rows = conn.execute(
+            "SELECT address, balance FROM purr_holders "
+            "WHERE balance >= ? ORDER BY balance DESC",
+            (min_purr,),
+        ).fetchall()
+    finally:
+        conn.close()
+    return _csv_response(
+        "purr-holders.csv",
+        ["address", "purr", "is_system"],
+        (
+            [r["address"], f"{r['balance']:.5f}", r["address"] in PURR_SYSTEM_ADDRESSES]
             for r in rows
         ),
     )

@@ -70,6 +70,18 @@ def fetch_validator_summaries() -> list[dict]:
     return r.json()
 
 
+def fetch_purr_holders() -> dict | None:
+    """Snapshot of PURR spot-token holders. Returns None on failure so a PURR
+    outage can't abort the (much larger) staking ingest."""
+    try:
+        r = httpx.get(f"{HYPURRSCAN}/holders/PURR", timeout=TIMEOUT)
+        r.raise_for_status()
+        return r.json()
+    except Exception as e:  # noqa: BLE001 — best-effort, logged and skipped
+        print(f"  PURR holders fetch failed: {e}")
+        return None
+
+
 def _event_row(e: dict) -> tuple:
     action = e.get("action") or {}
     block = e.get("block")
@@ -230,6 +242,24 @@ def rebuild_validators(conn, vs: list[dict]):
     )
 
 
+def rebuild_purr_holders(conn, data: dict | None):
+    """Replace the PURR holder snapshot. No-op (keeps prior snapshot) if the
+    fetch failed, so a transient PURR outage doesn't blank the table."""
+    if not data:
+        return
+    holders = data.get("holders") or {}
+    conn.execute("DELETE FROM purr_holders")
+    rows = [(addr.lower(), float(bal)) for addr, bal in holders.items()]
+    conn.executemany(
+        "INSERT OR REPLACE INTO purr_holders(address, balance) VALUES(?,?)",
+        rows,
+    )
+    last_update = data.get("lastUpdate")
+    if last_update is not None:
+        db.set_meta(conn, "purr_last_update_ms", str(int(last_update) * 1000))
+    db.set_meta(conn, "purr_holders_count", str(len(rows)))
+
+
 def rebuild_unstaking(conn, queue: list[dict]):
     conn.execute("DELETE FROM unstaking_queue")
     rows = [(q["user"], q["time"], int(q["wei"])) for q in queue]
@@ -249,6 +279,10 @@ def run() -> dict:
     print("Fetching validatorSummaries …")
     validators = fetch_validator_summaries()
     print(f"  {len(validators):,} validators")
+    print("Fetching PURR holders …")
+    purr = fetch_purr_holders()
+    if purr is not None:
+        print(f"  {len(purr.get('holders') or {}):,} PURR holders")
 
     conn = db.connect()
     try:
@@ -260,6 +294,7 @@ def run() -> dict:
         rebuild_staker_history(conn)
         rebuild_unstaking(conn, queue)
         rebuild_validators(conn, validators)
+        rebuild_purr_holders(conn, purr)
         db.set_meta(conn, "last_refresh_ms", str(int(time.time() * 1000)))
         db.set_meta(conn, "n_events", str(n_events))
         conn.commit()
@@ -272,6 +307,7 @@ def run() -> dict:
         "events": n_events,
         "validators": len(validators),
         "unstaking_queue": len(queue),
+        "purr_holders": len((purr or {}).get("holders") or {}),
         "seconds": elapsed,
     }
 

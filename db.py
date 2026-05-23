@@ -64,6 +64,15 @@ CREATE TABLE IF NOT EXISTS staker_history (
     PRIMARY KEY (period_start_ms, threshold_hype)
 );
 
+-- Snapshot of PURR spot-token holders from HypurrScan (/holders/PURR).
+-- Unlike staking there's no event log, so this is a point-in-time snapshot
+-- (replaced wholesale each ingest); balance is in PURR units (5 decimals).
+CREATE TABLE IF NOT EXISTS purr_holders (
+    address  TEXT PRIMARY KEY,
+    balance  REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_purr_balance ON purr_holders(balance DESC);
+
 CREATE TABLE IF NOT EXISTS meta (
     key   TEXT PRIMARY KEY,
     value TEXT

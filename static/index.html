@@ -4,114 +4,17 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>HYPE Staking Dashboard</title>
-<style>
-  :root {
-    --bg: #0b0f14;
-    --panel: #131a23;
-    --panel-2: #1a2330;
-    --border: #243042;
-    --text: #e6edf3;
-    --muted: #8b98a5;
-    --accent: #4ade80;
-    --accent-2: #38bdf8;
-    --warn: #f59e0b;
-  }
-  * { box-sizing: border-box; }
-  body {
-    margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
-    background: var(--bg); color: var(--text); line-height: 1.45;
-  }
-  header {
-    padding: 18px 28px; border-bottom: 1px solid var(--border);
-    display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px;
-  }
-  header h1 { margin: 0; font-size: 18px; letter-spacing: 0.3px; }
-  header h1 span { color: var(--accent); }
-  .meta { color: var(--muted); font-size: 13px; }
-  button {
-    background: var(--accent); color: #06121a; border: 0; padding: 8px 14px;
-    border-radius: 6px; font-weight: 600; cursor: pointer; font-size: 13px;
-  }
-  button:disabled { opacity: 0.6; cursor: progress; }
-  button.secondary { background: var(--panel-2); color: var(--text); border: 1px solid var(--border); }
-  .ghlink { color: var(--muted); display: inline-flex; align-items: center; padding: 4px; border-radius: 6px; transition: color 0.15s; }
-  .ghlink:hover { color: var(--text); background: var(--panel-2); }
-  main { padding: 24px 28px; max-width: 1280px; margin: 0 auto; }
-
-  .grid { display: grid; gap: 14px; }
-  .cards { grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
-  .card {
-    background: var(--panel); border: 1px solid var(--border);
-    border-radius: 10px; padding: 14px 16px;
-  }
-  .card .label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.6px; }
-  .card .value { font-size: 22px; font-weight: 600; margin-top: 4px; }
-  .card .sub { color: var(--muted); font-size: 12px; margin-top: 2px; }
-
-  section { margin-top: 26px; }
-  section h2 { font-size: 14px; text-transform: uppercase; letter-spacing: 0.8px; color: var(--muted); margin: 0 0 10px; display:flex; align-items:center; gap:12px; }
-  .download {
-    font-size: 11px; text-transform: none; letter-spacing: 0; font-weight: 500;
-    color: var(--accent-2); text-decoration: none; padding: 2px 8px;
-    border: 1px solid var(--border); border-radius: 4px;
-  }
-  .download:hover { background: var(--panel-2); }
-
-  table { width: 100%; border-collapse: collapse; font-size: 13px; }
-  th, td { padding: 8px 10px; text-align: left; border-bottom: 1px solid var(--border); }
-  th { color: var(--muted); font-weight: 500; font-size: 12px; text-transform: uppercase; letter-spacing: 0.4px; }
-  tbody tr:hover { background: var(--panel-2); }
-  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
-  .addr {
-    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px;
-    color: var(--accent-2); cursor: pointer; border-bottom: 1px dotted transparent;
-  }
-  .addr:hover { border-bottom-color: var(--accent-2); }
-  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 12px 16px; }
-
-  .filter { display: flex; flex-wrap: wrap; gap: 10px; align-items: end; margin-bottom: 12px; }
-  .filter label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
-  .filter input, .filter select {
-    background: var(--bg); color: var(--text); border: 1px solid var(--border);
-    padding: 6px 10px; border-radius: 6px; min-width: 110px; font-size: 13px;
-  }
-  .pager { display: flex; gap: 8px; align-items: center; margin-top: 10px; color: var(--muted); font-size: 13px; }
-
-  .bar-row { display: grid; grid-template-columns: 110px 1fr 110px 110px; gap: 10px; align-items: center; padding: 4px 0; }
-  .bar { background: var(--panel-2); border-radius: 4px; height: 16px; overflow: hidden; }
-  .bar-fill { background: linear-gradient(90deg, var(--accent), var(--accent-2)); height: 100%; }
-  .muted { color: var(--muted); }
-  .pill { display:inline-block; padding:2px 8px; border-radius:999px; font-size:11px; background: var(--panel-2); border:1px solid var(--border); color: var(--muted); }
-  .pill.warn { color: var(--warn); border-color: var(--warn); }
-  .empty { padding: 30px; text-align: center; color: var(--muted); }
-  .chart-title { font-size: 13px; color: var(--text); font-weight: 600; margin-bottom: 6px; }
-  .chart-title .muted { font-weight: 400; font-size: 11px; }
-  .chart { position: relative; }
-  .chart svg { display: block; }
-  .chart-tt {
-    position: absolute; pointer-events: none; z-index: 5; opacity: 0;
-    transition: opacity 0.1s; background: var(--panel-2); border: 1px solid var(--border);
-    border-radius: 6px; padding: 6px 9px; font-size: 12px; color: var(--text);
-    white-space: nowrap; box-shadow: 0 4px 14px rgba(0,0,0,0.45);
-  }
-  .chart-tt .tt-date { color: var(--muted); font-size: 11px; margin-bottom: 4px; }
-  .chart-tt .tt-row { display: flex; align-items: center; gap: 7px; line-height: 1.7; }
-  .chart-tt .tt-row i { width: 9px; height: 9px; border-radius: 2px; display: inline-block; flex: none; }
-  .chart-tt .tt-row b { margin-left: auto; padding-left: 14px; font-variant-numeric: tabular-nums; }
-  .legend { display: flex; gap: 16px; flex-wrap: wrap; margin-top: 8px; font-size: 12px; color: var(--muted); }
-  .legend .leg { display: inline-flex; align-items: center; gap: 6px; }
-  .legend .leg i { width: 11px; height: 3px; border-radius: 2px; display: inline-block; }
-  #toast {
-    position: fixed; bottom: 20px; right: 20px; background: var(--panel-2);
-    border: 1px solid var(--border); padding: 10px 14px; border-radius: 8px;
-    opacity: 0; transition: opacity 0.2s; pointer-events: none; font-size: 13px;
-  }
-  #toast.show { opacity: 1; }
-</style>
+<link rel="stylesheet" href="/static/style.css" />
 </head>
 <body>
 <header>
-  <h1>HYPE <span>Staking</span> Dashboard</h1>
+  <div class="brand">
+    <h1>HYPE <span>Staking</span> Dashboard</h1>
+    <nav>
+      <a href="/" class="active">Staking</a>
+      <a href="/purr">PURR Holders</a>
+    </nav>
+  </div>
   <div style="display:flex; gap:14px; align-items:center;">
     <div class="meta" id="lastRefresh">—</div>
     <a class="ghlink" href="https://github.com/zoan37/hype-staking-dashboard" target="_blank" rel="noopener" title="View source on GitHub">
